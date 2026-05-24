@@ -53,6 +53,8 @@ const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
 const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 const TOOL_CARD_SUMMARY_LINES: usize = 4;
 const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
+const THINKING_COMPLETED_PREVIEW_LINE_LIMIT: usize = 6;
+const THINKING_STREAMING_PREVIEW_LINE_LIMIT: usize = 8;
 const TOOL_DONE_SYMBOL: &str = "•";
 const TOOL_FAILED_SYMBOL: &str = "•";
 
@@ -2116,7 +2118,7 @@ fn render_thinking(
                 Some(summary) => summary,
                 None => {
                     collapsed_without_explicit_summary = true;
-                    String::new()
+                    content.to_string()
                 }
             }
         }
@@ -2129,14 +2131,21 @@ fn render_thinking(
         markdown_render::render_markdown(&body_text, content_width, body_style)
     };
     let mut truncated = false;
-    if collapsed && rendered.len() > THINKING_SUMMARY_LINE_LIMIT {
+    let line_limit = if streaming {
+        THINKING_STREAMING_PREVIEW_LINE_LIMIT
+    } else if collapsed_without_explicit_summary {
+        THINKING_COMPLETED_PREVIEW_LINE_LIMIT
+    } else {
+        THINKING_SUMMARY_LINE_LIMIT
+    };
+    if collapsed && rendered.len() > line_limit {
         if streaming {
             // Drop the *head* during streaming so the visible window
             // tracks the live cursor at the bottom.
-            let drop = rendered.len() - THINKING_SUMMARY_LINE_LIMIT;
+            let drop = rendered.len() - line_limit;
             rendered.drain(0..drop);
         } else {
-            rendered.truncate(THINKING_SUMMARY_LINE_LIMIT);
+            rendered.truncate(line_limit);
         }
         truncated = true;
     }
@@ -2172,7 +2181,7 @@ fn render_thinking(
             // knows there's more above and how to reach it.
             truncated
         } else {
-            collapsed_without_explicit_summary || truncated || body_text.trim() != content.trim()
+            truncated || body_text.trim() != content.trim()
         };
     if needs_affordance {
         let label = if streaming {
@@ -3750,7 +3759,7 @@ mod tests {
         // #861 RC4: when a streaming thinking block exceeds the line cap,
         // surface a live affordance pointing at Ctrl+O. The earlier code
         // suppressed the affordance unless `!streaming`.
-        let long = (1..=10)
+        let long = (1..=12)
             .map(|i| format!("Reasoning line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -3765,7 +3774,7 @@ mod tests {
         );
         // The most recent line must be the visible tail (head dropped).
         assert!(
-            text.contains("Reasoning line 10"),
+            text.contains("Reasoning line 12"),
             "tail line missing, got: {text}"
         );
         assert!(
@@ -4407,9 +4416,9 @@ mod tests {
     #[test]
     fn long_thinking_display_is_shorter_than_transcript() {
         // Build a multi-paragraph thinking body so the live view has
-        // something to compress. Without an explicit Summary block, the
-        // live surface should show status + affordance only; Ctrl+O remains
-        // the path to the full body.
+        // something to compress. Without an explicit Summary block, the live
+        // surface should show a bounded preview plus affordance; Ctrl+O
+        // remains the path to the full body.
         let body = "First paragraph lede.\n\
                     Second sentence of the first paragraph.\n\n\
                     Second paragraph: deeper analysis follows.\n\
@@ -4448,8 +4457,8 @@ mod tests {
             "transcript thinking must keep the lede"
         );
         assert!(
-            !live_text.contains("First paragraph lede"),
-            "live thinking must not show raw completed reasoning: {live_text}"
+            live_text.contains("First paragraph lede"),
+            "live thinking should preview completed reasoning: {live_text}"
         );
         assert!(
             transcript_text.contains("Fourth paragraph"),
@@ -4470,10 +4479,10 @@ mod tests {
     }
 
     #[test]
-    fn completed_thinking_without_summary_stays_out_of_live_view() {
-        // Even a short completed reasoning body can read like the user's
-        // prompt when rendered inline. Keep it in transcript/detail surfaces
-        // and show the Ctrl+O affordance in the main flow.
+    fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
+        // Short completed reasoning should not become a dead "Full reasoning
+        // in Ctrl+O" card. The reasoning rail and tint already distinguish it
+        // from the user's prompt, so show the useful body inline.
         let cell = HistoryCell::Thinking {
             content: "One brief reasoning step.".to_string(),
             streaming: false,
@@ -4493,16 +4502,16 @@ mod tests {
         let transcript_text = lines_text(&transcript);
 
         assert!(
-            !live_text.contains("One brief reasoning step."),
-            "live thinking must hide raw completed reasoning: {live_text}"
+            live_text.contains("One brief reasoning step."),
+            "live thinking must preview short completed reasoning: {live_text}"
         );
         assert!(
             transcript_text.contains("One brief reasoning step."),
             "transcript thinking must keep the full reasoning body"
         );
         assert!(
-            live_text.contains("Full reasoning in Ctrl+O"),
-            "live thinking must offer the detail affordance"
+            !live_text.contains("Full reasoning in Ctrl+O"),
+            "complete short reasoning should not need the detail affordance: {live_text}"
         );
     }
 
