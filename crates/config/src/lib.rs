@@ -216,6 +216,9 @@ pub struct ConfigToml {
     pub telemetry: Option<bool>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    /// Native tool catalog controls shared with `codewhale-tui`.
+    #[serde(default)]
+    pub tools: Option<ToolsToml>,
     #[serde(default)]
     pub providers: ProvidersToml,
     /// Per-domain network policy (#135). When absent, network tools fall back
@@ -251,6 +254,14 @@ pub struct SkillsToml {
     /// uses 5 MiB.
     #[serde(default)]
     pub max_install_size_bytes: Option<u64>,
+}
+
+/// On-disk schema for the `[tools]` table (#2076).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsToml {
+    /// Native tool names to keep loaded outside the default core catalog.
+    #[serde(default)]
+    pub always_load: Vec<String>,
 }
 
 /// On-disk schema for the `[snapshots]` table (#137). See
@@ -373,6 +384,13 @@ impl ConfigToml {
         {
             self.sandbox_mode = Some(mode);
         }
+        if project.tools.is_some() {
+            self.tools = project.tools;
+        }
+        // Provider is only overridden if explicitly set (non-default).
+        if project.provider != ProviderKind::Deepseek || has_api_key {
+            self.provider = project.provider;
+        }
 
         merge_project_provider_config(&mut self.providers.deepseek, &project.providers.deepseek);
         merge_project_provider_config(
@@ -414,6 +432,7 @@ impl ConfigToml {
             "telemetry" => self.telemetry.map(|v| v.to_string()),
             "approval_policy" => self.approval_policy.clone(),
             "sandbox_mode" => self.sandbox_mode.clone(),
+            "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
             "providers.deepseek.api_key" => self.providers.deepseek.api_key.clone(),
             "providers.deepseek.base_url" => self.providers.deepseek.base_url.clone(),
             "providers.deepseek.model" => self.providers.deepseek.model.clone(),

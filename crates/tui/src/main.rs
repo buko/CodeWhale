@@ -5161,6 +5161,7 @@ async fn run_exec_agent(
             .and_then(|s| s.provider)
             .unwrap_or_default(),
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
+        tools_always_load: config.tools_always_load(),
     };
 
     let engine_handle = spawn_engine(engine_config, config);

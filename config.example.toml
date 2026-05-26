@@ -97,6 +97,12 @@ memory_path = "~/.deepseek/memory.md"
 # Parsed but currently unused (reserved for future versions):
 # tools_file = "./tools.json"
 
+# Native tool catalog controls (#2076). By default only the core tool surface
+# is loaded into the model context; less common native tools are discoverable
+# through ToolSearch and loaded on first use.
+# [tools]
+# always_load = ["git_show", "notify"]
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────

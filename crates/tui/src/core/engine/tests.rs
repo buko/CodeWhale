@@ -386,40 +386,74 @@ fn tool_exec_outcome_tracks_duration() {
 }
 
 #[test]
-fn yolo_mode_keeps_tools_preloaded() {
-    assert!(!should_default_defer_tool("exec_shell", AppMode::Yolo));
+fn core_native_tools_stay_loaded_in_yolo_mode() {
+    let always_load = HashSet::new();
     assert!(!should_default_defer_tool(
-        "mcp_read_resource",
-        AppMode::Yolo
+        "exec_shell",
+        AppMode::Yolo,
+        &always_load
+    ));
+    assert!(should_default_defer_tool(
+        "git_show",
+        AppMode::Yolo,
+        &always_load
     ));
 }
 
 #[test]
 fn non_yolo_mode_retains_default_defer_policy() {
-    // Shell tools are kept loaded in action modes so the model can verify
-    // work without an extra ToolSearch round-trip; non-action tools (e.g.
-    // MCP) still defer.
-    assert!(!should_default_defer_tool("exec_shell", AppMode::Agent));
-    assert!(should_default_defer_tool("exec_shell", AppMode::Plan));
-    assert!(!should_default_defer_tool("read_file", AppMode::Agent));
-    assert!(!should_default_defer_tool("write_file", AppMode::Agent));
+    let always_load = HashSet::new();
+    assert!(!should_default_defer_tool(
+        "exec_shell",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "edit_file",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "run_tests",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "agent_open",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "read_file",
+        AppMode::Agent,
+        &always_load
+    ));
+    assert!(!should_default_defer_tool(
+        "write_file",
+        AppMode::Agent,
+        &always_load
+    ));
     assert!(should_default_defer_tool(
-        "mcp_read_resource",
-        AppMode::Agent
+        "git_show",
+        AppMode::Agent,
+        &always_load
     ));
 }
 
 #[test]
 fn model_tool_catalog_applies_native_and_mcp_deferral() {
+    let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
         vec![
             api_tool("read_file"),
             api_tool("write_file"),
             api_tool("exec_shell"),
+            api_tool("edit_file"),
             api_tool("project_map"),
         ],
         vec![api_tool("list_mcp_resources"), api_tool("mcp_server_write")],
         AppMode::Agent,
+        &always_load,
     );
 
     let defer_loading = |name: &str| {
@@ -432,9 +466,85 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
     assert_eq!(defer_loading("read_file"), Some(false));
     assert_eq!(defer_loading("write_file"), Some(false));
     assert_eq!(defer_loading("exec_shell"), Some(false));
+    assert_eq!(defer_loading("edit_file"), Some(false));
     assert_eq!(defer_loading("project_map"), Some(true));
     assert_eq!(defer_loading("list_mcp_resources"), Some(false));
     assert_eq!(defer_loading("mcp_server_write"), Some(true));
+}
+
+#[test]
+fn tools_always_load_overrides_default_native_deferral() {
+    let always_load = HashSet::from(["git_show".to_string()]);
+    assert!(!should_default_defer_tool(
+        "git_show",
+        AppMode::Agent,
+        &always_load
+    ));
+}
+
+#[test]
+#[ignore = "one-shot metric for scripts/measure-tool-catalog.py"]
+fn print_agent_tool_catalog_metrics() {
+    let tmp = tempdir().expect("tempdir");
+    let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
+    let client = DeepSeekClient::new(&Config {
+        api_key: Some("test-key".to_string()),
+        ..Config::default()
+    })
+    .expect("stub client");
+    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
+    let runtime = crate::tools::subagent::SubAgentRuntime::new(
+        client,
+        DEFAULT_TEXT_MODEL.to_string(),
+        context.clone(),
+        true,
+        None,
+        manager.clone(),
+    );
+    let registry = crate::tools::ToolRegistryBuilder::new()
+        .with_agent_tools(true)
+        .with_todo_tool(new_shared_todo_list())
+        .with_plan_tool(new_shared_plan_state())
+        .with_review_tool(None, DEFAULT_TEXT_MODEL.to_string())
+        .with_rlm_tool(None, DEFAULT_TEXT_MODEL.to_string())
+        .with_recall_archive_tool()
+        .with_notify_tool()
+        .with_subagent_tools(manager, runtime)
+        .build(context);
+    let baseline_catalog = registry.to_api_tools_with_cache(true);
+    let baseline_json = serde_json::to_vec(&baseline_catalog).expect("serialize baseline");
+
+    let always_load = HashSet::new();
+    let mut catalog = build_model_tool_catalog(
+        baseline_catalog.clone(),
+        vec![],
+        AppMode::Agent,
+        &always_load,
+    );
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
+    let active = initial_active_tools(&catalog);
+    let active_catalog = active_tools_for_step(&catalog, &active, false);
+    let active_json = serde_json::to_vec(&active_catalog).expect("serialize active");
+    let reduction_percent = if baseline_json.is_empty() {
+        0.0
+    } else {
+        100.0 * (baseline_json.len().saturating_sub(active_json.len())) as f64
+            / baseline_json.len() as f64
+    };
+
+    println!(
+        "TOOL_CATALOG_METRICS {}",
+        serde_json::json!({
+            "baseline_tools": baseline_catalog.len(),
+            "baseline_bytes": baseline_json.len(),
+            "baseline_tokens_est": baseline_json.len().div_ceil(4),
+            "active_tools": active_catalog.len(),
+            "active_bytes": active_json.len(),
+            "active_tokens_est": active_json.len().div_ceil(4),
+            "reduction_percent": reduction_percent,
+            "active_tool_names": active_catalog.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+        })
+    );
 }
 
 #[test]
@@ -511,14 +621,25 @@ fn deferred_edit_file_first_use_hydrates_schema_without_execution() {
 }
 
 #[test]
-fn model_tool_catalog_keeps_everything_loaded_in_yolo_mode() {
+fn model_tool_catalog_defers_non_core_native_tools_in_yolo_mode() {
+    let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
-        vec![api_tool("project_map")],
+        vec![api_tool("read_file"), api_tool("project_map")],
         vec![api_tool("mcp_server_write")],
         AppMode::Yolo,
+        &always_load,
     );
 
-    assert!(catalog.iter().all(|tool| tool.defer_loading == Some(false)));
+    let defer_loading = |name: &str| {
+        catalog
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.defer_loading)
+    };
+
+    assert_eq!(defer_loading("read_file"), Some(false));
+    assert_eq!(defer_loading("project_map"), Some(true));
+    assert_eq!(defer_loading("mcp_server_write"), Some(false));
 }
 
 #[test]
@@ -526,6 +647,7 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
     // Regression for #263: deterministic byte order of the tools array is a
     // hard requirement for DeepSeek's KV prefix cache. Built-ins stay as a
     // contiguous prefix; MCP tools follow. Within each partition: alphabetical.
+    let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
         vec![
             api_tool("read_file"),
@@ -534,6 +656,7 @@ fn model_tool_catalog_sorts_each_partition_for_prefix_cache_stability() {
         ],
         vec![api_tool("mcp_zoo_b"), api_tool("mcp_aardvark_a")],
         AppMode::Yolo,
+        &always_load,
     );
 
     let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
@@ -588,11 +711,18 @@ fn deferred_tool_preflight_loads_edit_schema_without_executing_bad_aliases() {
             engine.config.plan_state.clone(),
         )
         .build(engine.build_tool_context(AppMode::Agent, false));
-    let catalog = build_model_tool_catalog(
+    let always_load = HashSet::new();
+    let mut catalog = build_model_tool_catalog(
         registry.to_api_tools_with_cache(true),
         vec![],
         AppMode::Agent,
+        &always_load,
     );
+    catalog
+        .iter_mut()
+        .find(|tool| tool.name == "edit_file")
+        .expect("edit_file registered")
+        .defer_loading = Some(true);
     let mut active = initial_active_tools(&catalog);
     assert!(!active.contains("edit_file"));
 
@@ -633,10 +763,12 @@ fn deferred_tool_preflight_guides_checklist_update_list_replacement() {
             engine.config.plan_state.clone(),
         )
         .build(engine.build_tool_context(AppMode::Agent, false));
+    let always_load = HashSet::new();
     let catalog = build_model_tool_catalog(
         registry.to_api_tools_with_cache(true),
         vec![],
         AppMode::Agent,
+        &always_load,
     );
     let mut active = initial_active_tools(&catalog);
     assert!(!active.contains("checklist_update"));
@@ -1726,7 +1858,8 @@ fn tool_search_activates_discovered_deferred_tools() {
             cache_control: None,
         },
     ];
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent);
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
     let mut active = initial_active_tools(&catalog);
     let result = execute_tool_search(
         TOOL_SEARCH_BM25_NAME,
@@ -1753,7 +1886,8 @@ async fn code_execution_runs_python_and_returns_result_payload() {
 #[test]
 fn plan_mode_catalog_skips_code_execution_tool_but_agent_keeps_it() {
     let mut plan_catalog = vec![api_tool("read_file")];
-    ensure_advanced_tooling(&mut plan_catalog, AppMode::Plan);
+    let always_load = HashSet::new();
+    ensure_advanced_tooling(&mut plan_catalog, AppMode::Plan, &always_load);
     assert!(
         !plan_catalog
             .iter()
@@ -1762,7 +1896,7 @@ fn plan_mode_catalog_skips_code_execution_tool_but_agent_keeps_it() {
     );
 
     let mut agent_catalog = vec![api_tool("read_file")];
-    ensure_advanced_tooling(&mut agent_catalog, AppMode::Agent);
+    ensure_advanced_tooling(&mut agent_catalog, AppMode::Agent, &always_load);
     assert!(
         agent_catalog
             .iter()

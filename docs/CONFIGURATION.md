@@ -618,6 +618,17 @@ These keys are accepted by the config loader but not currently used by the inter
 
 - `tools_file`
 
+## Tool Catalog
+
+CodeWhale loads a small core native tool catalog by default and leaves less
+common native tools discoverable through ToolSearch. To keep specific native
+tools loaded on every request, add them to `[tools].always_load`:
+
+```toml
+[tools]
+always_load = ["git_show", "notify"]
+```
+
 ## Feature Flags
 
 Feature flags live under the `[features]` table and are merged across profiles.

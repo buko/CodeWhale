@@ -7,8 +7,8 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -171,6 +171,9 @@ pub struct EngineConfig {
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Native tools that should stay in the model-visible catalog even when
+    /// they are outside the small default core surface (#2076).
+    pub tools_always_load: HashSet<String>,
     /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
     /// through bubblewrap instead of relying solely on Landlock (#2184).
     #[allow(dead_code)] // Wired through ShellManager in follow-up PR
@@ -218,6 +221,7 @@ impl Default for EngineConfig {
             subagent_api_timeout: Duration::from_secs(
                 crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
             ),
+            tools_always_load: HashSet::new(),
             prefer_bwrap: false,
         }
     }
@@ -1130,7 +1134,12 @@ impl Engine {
             Vec::new()
         };
         let tools = tool_registry.as_ref().map(|registry| {
-            build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode)
+            build_model_tool_catalog(
+                registry.to_api_tools_with_cache(true),
+                mcp_tools,
+                mode,
+                &self.config.tools_always_load,
+            )
         });
 
         // Main turn loop
