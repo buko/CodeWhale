@@ -88,10 +88,10 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
         // DeepSeek Platform pricing. Avoid showing misleading DeepSeek costs.
         return None;
     }
-    if !lower.contains("deepseek") {
+    if !lower.contains("deepseek") && !lower.starts_with("mimo") {
         return None;
     }
-    if lower.contains("v4-pro") || lower.contains("v4pro") {
+    if lower.contains("v4-pro") || lower.contains("v4pro") || lower.contains("mimo-v2.5-pro") {
         if now <= v4_pro_discount_ends_at() {
             // DeepSeek lists these as a limited-time 75% discount through
             // 2026-05-31 15:59 UTC.
