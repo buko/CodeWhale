@@ -64,6 +64,13 @@ enum PendingOfflineQueue {
     Clear,
 }
 
+#[derive(Debug)]
+enum CheckpointAction {
+    None,
+    Save(SavedSession),
+    Clear,
+}
+
 // ---------------------------------------------------------------------------
 // Handle (held by the TUI)
 // ---------------------------------------------------------------------------
@@ -120,17 +127,16 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
         "persistence-actor",
         std::panic::Location::caller(),
         async move {
-            let mut latest_checkpoint: Option<SavedSession> = None;
+            let mut latest_checkpoint_action: CheckpointAction = CheckpointAction::None;
             let mut latest_session: Option<SavedSession> = None;
             let mut latest_offline_queue: Option<PendingOfflineQueue> = None;
-            let mut should_clear: bool = false;
 
             loop {
                 // Drain everything waiting, keeping only the latest of each kind.
                 while let Ok(req) = rx.try_recv() {
                     match req {
                         PersistRequest::Checkpoint(session) => {
-                            latest_checkpoint = Some(session);
+                            latest_checkpoint_action = CheckpointAction::Save(session);
                         }
                         PersistRequest::SessionSnapshot(session) => {
                             latest_session = Some(session);
@@ -143,15 +149,14 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                             latest_offline_queue = Some(PendingOfflineQueue::Clear);
                         }
                         PersistRequest::ClearCheckpoint => {
-                            should_clear = true;
+                            latest_checkpoint_action = CheckpointAction::Clear;
                         }
                         PersistRequest::Shutdown => {
                             flush_inner(
                                 &manager,
-                                latest_checkpoint.as_ref(),
+                                &latest_checkpoint_action,
                                 latest_session.as_ref(),
                                 latest_offline_queue.as_ref(),
-                                should_clear,
                             );
                             return;
                         }
@@ -159,13 +164,17 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                 }
 
                 // Write coalesced work.
-                if should_clear {
-                    let _ = manager.clear_checkpoint();
-                    should_clear = false;
+                let action = std::mem::replace(&mut latest_checkpoint_action, CheckpointAction::None);
+                match action {
+                    CheckpointAction::Clear => {
+                        let _ = manager.clear_checkpoint();
+                    }
+                    CheckpointAction::Save(session) => {
+                        let _ = manager.save_checkpoint(&session);
+                    }
+                    CheckpointAction::None => {}
                 }
-                if let Some(ref session) = latest_checkpoint.take() {
-                    let _ = manager.save_checkpoint(session);
-                }
+                
                 if let Some(ref session) = latest_session.take() {
                     let _ = manager.save_session(session);
                 }
@@ -176,7 +185,7 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                 // Block until the next request arrives.
                 match rx.recv().await {
                     Some(PersistRequest::Checkpoint(session)) => {
-                        latest_checkpoint = Some(session);
+                        latest_checkpoint_action = CheckpointAction::Save(session);
                     }
                     Some(PersistRequest::SessionSnapshot(session)) => {
                         latest_session = Some(session);
@@ -189,15 +198,14 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                         latest_offline_queue = Some(PendingOfflineQueue::Clear);
                     }
                     Some(PersistRequest::ClearCheckpoint) => {
-                        should_clear = true;
+                        latest_checkpoint_action = CheckpointAction::Clear;
                     }
                     Some(PersistRequest::Shutdown) => {
                         flush_inner(
                             &manager,
-                            latest_checkpoint.as_ref(),
+                            &latest_checkpoint_action,
                             latest_session.as_ref(),
                             latest_offline_queue.as_ref(),
-                            should_clear,
                         );
                         return;
                     }
@@ -205,10 +213,9 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
                         // Channel closed — final flush and exit.
                         flush_inner(
                             &manager,
-                            latest_checkpoint.as_ref(),
+                            &latest_checkpoint_action,
                             latest_session.as_ref(),
                             latest_offline_queue.as_ref(),
-                            should_clear,
                         );
                         return;
                     }
@@ -223,16 +230,18 @@ pub fn spawn_persistence_actor(manager: SessionManager) -> PersistActorHandle {
 /// Write any pending work to disk (used on shutdown).
 fn flush_inner(
     manager: &SessionManager,
-    checkpoint: Option<&SavedSession>,
+    checkpoint_action: &CheckpointAction,
     session: Option<&SavedSession>,
     offline_queue: Option<&PendingOfflineQueue>,
-    should_clear: bool,
 ) {
-    if should_clear {
-        let _ = manager.clear_checkpoint();
-    }
-    if let Some(s) = checkpoint {
-        let _ = manager.save_checkpoint(s);
+    match checkpoint_action {
+        CheckpointAction::Clear => {
+            let _ = manager.clear_checkpoint();
+        }
+        CheckpointAction::Save(s) => {
+            let _ = manager.save_checkpoint(s);
+        }
+        CheckpointAction::None => {}
     }
     if let Some(s) = session {
         let _ = manager.save_session(s);
@@ -258,7 +267,9 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::session_manager::{OfflineQueueState, QueuedSessionMessage};
+    use crate::session_manager::{OfflineQueueState, QueuedSessionMessage, SessionMetadata, SessionCostSnapshot};
+    use chrono::Utc;
+    use std::path::PathBuf;
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -271,6 +282,32 @@ mod tests {
                 "timed out waiting for persistence actor"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn make_dummy_session(id: &str) -> SavedSession {
+        let now = Utc::now();
+        SavedSession {
+            schema_version: 1,
+            metadata: SessionMetadata {
+                id: id.to_string(),
+                title: "Dummy Session".to_string(),
+                created_at: now,
+                updated_at: now,
+                message_count: 0,
+                total_tokens: 0,
+                model: "dummy".to_string(),
+                workspace: PathBuf::from("/tmp"),
+                mode: None,
+                cost: SessionCostSnapshot::default(),
+                parent_session_id: None,
+                forked_from_message_count: None,
+                cumulative_turn_secs: 0,
+            },
+            messages: vec![],
+            system_prompt: None,
+            context_references: vec![],
+            artifacts: vec![],
         }
     }
 
@@ -302,6 +339,55 @@ mod tests {
 
         handle.try_send(PersistRequest::ClearOfflineQueue);
         wait_until(|| !queue_path.exists()).await;
+        handle.try_send(PersistRequest::Shutdown);
+    }
+
+    #[tokio::test]
+    async fn actor_checkpoint_then_clear_deletes_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+        let checkpoint_path = sessions_dir.join("checkpoints").join("latest.json");
+        let handle = spawn_persistence_actor(manager);
+
+        // Send a checkpoint request
+        handle.try_send(PersistRequest::Checkpoint(make_dummy_session("test1")));
+        wait_until(|| checkpoint_path.exists()).await;
+        
+        // Then send a clear request
+        handle.try_send(PersistRequest::ClearCheckpoint);
+        wait_until(|| !checkpoint_path.exists()).await;
+        
+        // At shutdown, they should be processed together and cleared if sent back-to-back.
+        handle.try_send(PersistRequest::Checkpoint(make_dummy_session("test2")));
+        handle.try_send(PersistRequest::ClearCheckpoint);
+        handle.try_send(PersistRequest::Shutdown);
+        wait_until(|| !checkpoint_path.exists()).await;
+    }
+
+    #[tokio::test]
+    async fn actor_clear_then_checkpoint_writes_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = tmp.path().join("sessions");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+        let checkpoint_path = sessions_dir.join("checkpoints").join("latest.json");
+        let handle = spawn_persistence_actor(manager);
+
+        // Pre-create the checkpoint file to simulate an old one
+        std::fs::create_dir_all(sessions_dir.join("checkpoints")).unwrap();
+        std::fs::write(&checkpoint_path, "old").unwrap();
+
+        // Send Clear then Checkpoint back-to-back
+        handle.try_send(PersistRequest::ClearCheckpoint);
+        handle.try_send(PersistRequest::Checkpoint(make_dummy_session("test3")));
+        
+        // The file should eventually be written with "test3"
+        wait_until(|| {
+            std::fs::read_to_string(&checkpoint_path)
+                .unwrap_or_default()
+                .contains("test3")
+        }).await;
+
         handle.try_send(PersistRequest::Shutdown);
     }
 }
