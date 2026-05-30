@@ -1892,6 +1892,9 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN => {
                     ("DEEPSEEK_API_KEY", "codewhale auth set --provider deepseek")
                 }
+                crate::config::ApiProvider::Xiaomi => {
+                    ("XIAOMI_API_KEY", "codewhale auth set --provider xiaomi")
+                }
             };
             println!(
                 "  {} api_key: missing  (set {env_var} or `[providers.{}].api_key` in ~/.deepseek/config.toml; or run `{login_hint}`)",
@@ -1910,6 +1913,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Ollama => "ollama",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
+                    crate::config::ApiProvider::Xiaomi => "xiaomi",
                 }
             );
         }
@@ -4855,7 +4859,7 @@ async fn run_interactive(
         }
         eprintln!("\nCodeWhale will now exit so you can verify the new configuration.");
         eprintln!("Simply run CodeWhale again to continue.");
-        std::process::exit(0);
+        return Ok(());
     }
     let model = config.default_model();
     let max_subagents = cli.max_subagents.map_or_else(

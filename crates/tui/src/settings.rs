@@ -282,6 +282,11 @@ pub struct Settings {
     /// Set to 0 for unlimited depth (use with caution in large repos).
     #[serde(default = "default_mention_walk_depth")]
     pub mention_walk_depth: usize,
+    /// Maximum number of file entries scanned when resolving @-mentions.
+    /// Default: 4096. Increase for extremely wide monorepos, but high values
+    /// can cause UI freezing when generating the candidate list.
+    #[serde(default = "default_mention_scan_limit")]
+    pub mention_scan_limit: usize,
     /// Maximum number of @-mention popup entries returned to the renderer.
     /// Default: 128. The composer widget paginates by terminal height, so
     /// this only needs to be high enough to encompass the full candidate list.
@@ -305,7 +310,11 @@ fn default_mention_menu_behavior() -> MentionMenuBehavior {
 }
 
 fn default_mention_walk_depth() -> usize {
-    0
+    6
+}
+
+fn default_mention_scan_limit() -> usize {
+    4096
 }
 
 fn default_mention_menu_limit() -> usize {
@@ -353,6 +362,7 @@ impl Default for Settings {
             synchronized_output: "auto".to_string(),
             prefer_external_pdftotext: false,
             mention_walk_depth: default_mention_walk_depth(),
+            mention_scan_limit: default_mention_scan_limit(),
             mention_menu_limit: default_mention_menu_limit(),
             mention_menu_behavior: default_mention_menu_behavior(),
         }

@@ -88,10 +88,43 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
         // DeepSeek Platform pricing. Avoid showing misleading DeepSeek costs.
         return None;
     }
-    if !lower.contains("deepseek") && !lower.starts_with("mimo") {
+    // Exact prices derived from kb/journal/2026/05:
+    // Official pricing reference: https://ai.xiaomi.com/pricing
+    if lower.starts_with("mimo") {
+        if lower == "mimo-v2.5-pro" {
+            return Some(ModelPricing {
+                usd: CurrencyPricing {
+                    input_cache_hit_per_million: 0.0036,
+                    input_cache_miss_per_million: 0.435,
+                    output_per_million: 0.87,
+                },
+                cny: CurrencyPricing {
+                    input_cache_hit_per_million: 0.025,
+                    input_cache_miss_per_million: 3.0,
+                    output_per_million: 6.0,
+                },
+            });
+        } else if lower == "mimo-v2.5" {
+            return Some(ModelPricing {
+                usd: CurrencyPricing {
+                    input_cache_hit_per_million: 0.0028,
+                    input_cache_miss_per_million: 0.14,
+                    output_per_million: 0.28,
+                },
+                cny: CurrencyPricing {
+                    input_cache_hit_per_million: 0.02,
+                    input_cache_miss_per_million: 1.0,
+                    output_per_million: 2.0,
+                },
+            });
+        }
         return None;
     }
-    if lower.contains("v4-pro") || lower.contains("v4pro") || lower.contains("mimo-v2.5-pro") {
+
+    if !lower.contains("deepseek") {
+        return None;
+    }
+    if lower.contains("v4-pro") || lower.contains("v4pro") {
         if now <= v4_pro_discount_ends_at() {
             // DeepSeek lists these as a limited-time 75% discount through
             // 2026-05-31 15:59 UTC.

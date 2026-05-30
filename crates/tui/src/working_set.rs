@@ -30,6 +30,7 @@ pub struct Workspace {
     cwd: Option<PathBuf>,
     file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,
     pub walk_depth: usize,
+    pub mention_scan_limit: usize,
     pub mention_menu_behavior: crate::settings::MentionMenuBehavior,
 }
 
@@ -40,7 +41,7 @@ impl Workspace {
     /// [`Workspace::with_cwd`] with its own captured launch directory.
     #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
     pub fn new(root: PathBuf) -> Self {
-        Self::with_cwd(root, std::env::current_dir().ok(), 6, crate::settings::MentionMenuBehavior::Fuzzy)
+        Self::with_cwd(root, std::env::current_dir().ok(), 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy)
     }
 
     /// Construct with an explicit cwd. Used by tests that need deterministic
@@ -50,6 +51,7 @@ impl Workspace {
         root: PathBuf,
         cwd: Option<PathBuf>,
         walk_depth: usize,
+        mention_scan_limit: usize,
         mention_menu_behavior: crate::settings::MentionMenuBehavior,
     ) -> Self {
         Self {
@@ -57,6 +59,7 @@ impl Workspace {
             cwd,
             file_index: OnceLock::new(),
             walk_depth,
+            mention_scan_limit,
             mention_menu_behavior,
         }
     }
@@ -170,7 +173,7 @@ impl Workspace {
         // hidden/ignored path the user might `@`-mention (e.g. a project's
         // own `.generated/specs/`). `local_reference_paths` walks with
         // gitignore disabled but still honors `.deepseekignore`.
-        for path in local_reference_paths(&self.root, LOCAL_REFERENCE_SCAN_LIMIT, self.walk_depth) {
+        for path in local_reference_paths(&self.root, self.mention_scan_limit, self.walk_depth) {
             if total >= FILE_INDEX_MAX_ENTRIES {
                 break;
             }
@@ -259,6 +262,7 @@ impl Workspace {
                     &mut substring_hits,
                     &mut seen,
                     walk_depth,
+                    self.mention_scan_limit,
                 );
             }
         }
@@ -281,6 +285,7 @@ impl Workspace {
             &mut substring_hits,
             &mut seen,
             walk_depth,
+            self.mention_scan_limit,
         );
 
         if self.mention_menu_behavior == crate::settings::MentionMenuBehavior::Browser {
@@ -485,9 +490,6 @@ fn walk_for_completions(
     );
 }
 
-const LOCAL_REFERENCE_SCAN_LIMIT: usize = 100000;
-
-#[allow(clippy::too_many_arguments)]
 fn add_local_reference_completions(
     root: &Path,
     display_root: &Path,
@@ -497,12 +499,13 @@ fn add_local_reference_completions(
     substring_hits: &mut Vec<String>,
     seen: &mut HashSet<PathBuf>,
     walk_depth: usize,
+    scan_limit: usize,
 ) {
     if !should_try_local_reference_completion(needle) {
         return;
     }
 
-    for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT, walk_depth) {
+    for path in local_reference_paths(root, scan_limit, walk_depth) {
         if prefix_hits.len() + substring_hits.len() >= limit {
             break;
         }
@@ -596,6 +599,7 @@ impl Clone for Workspace {
             cwd: self.cwd.clone(),
             file_index: OnceLock::new(),
             walk_depth: self.walk_depth,
+            mention_scan_limit: self.mention_scan_limit,
             mention_menu_behavior: self.mention_menu_behavior.clone(),
         }
     }
@@ -1478,7 +1482,7 @@ mod tests {
 
         // Construct with an explicit cwd so the test doesn't race with other
         // tests that mutate the real process cwd.
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(sub.clone()));
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(sub.clone()), 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         // #101 repro #1: @bar.txt with cwd=sub MUST resolve via the cwd pass,
         // never to the bogus workspace path tmp/bar.txt (which doesn't exist).
@@ -1503,7 +1507,7 @@ mod tests {
     #[test]
     fn workspace_resolve_returns_err_for_truly_missing_path() {
         let tmp = TempDir::new().unwrap();
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()), 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         let res = ws.resolve("does/not/exist.txt");
         assert!(res.is_err(), "expected Err for missing path, got: {res:?}");
@@ -1525,7 +1529,7 @@ mod tests {
         std::fs::write(ws_root.join("alpha.txt"), "a").unwrap();
         std::fs::write(cwd_root.join("alphabeta.txt"), "b").unwrap();
 
-        let ws = Workspace::with_cwd(ws_root.clone(), Some(cwd_root.clone()));
+        let ws = Workspace::with_cwd(ws_root.clone(), Some(cwd_root.clone()), 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
         let entries = ws.completions("alpha", 16);
         assert!(
             entries.iter().any(|e| e == "alpha.txt"),
@@ -1554,7 +1558,7 @@ mod tests {
         std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
         std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()), 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         let start_entries = ws.completions(".deepseek/commands", 16);
         assert!(
@@ -1593,7 +1597,7 @@ mod tests {
         std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
         std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None, 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
         let resolved = ws.resolve("device-layout.md").unwrap();
 
         assert!(resolved.ends_with(".generated/specs/device-layout.md"));
@@ -1613,7 +1617,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("a/b/target_dir")).unwrap();
         std::fs::write(tmp.path().join("a/b/needle.rs"), "fn main(){}").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None, 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         // Basename-only mention triggers fuzzy fallback for both files and dirs.
         let f = ws.resolve("needle.rs").unwrap();
@@ -1656,7 +1660,7 @@ mod tests {
         )
         .unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd(root.to_path_buf(), None, 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         // Completions should find entries inside the dot-dirs.
         {
@@ -1709,7 +1713,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".deepseek/commands")).unwrap();
         std::fs::write(root.join(".deepseek/commands/build.md"), "build cmd").unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd(root.to_path_buf(), None, 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         // Searching for "build" must find build.md.
         let entries = ws.completions("build", 16);
@@ -1773,7 +1777,7 @@ mod tests {
         for i in 0..40 {
             std::fs::write(root.join(format!("file_{i}.txt")), "x").unwrap();
         }
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd(root.to_path_buf(), None, 6, 4096, crate::settings::MentionMenuBehavior::Fuzzy);
 
         let start = std::time::Instant::now();
         let entries = ws.completions("/", 64);
