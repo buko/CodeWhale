@@ -901,42 +901,49 @@ async fn run_event_loop(
     // Fire-and-forget version check — runs once per session in the
     // background. On success, `app.version_hint` is set and the footer
     // renders the update recommendation on the next frame.
-    let mut version_check: Option<tokio::task::JoinHandle<Option<String>>> = Some({
-        let current = env!("CARGO_PKG_VERSION").to_string();
-        tokio::spawn(async move {
-            let client = match reqwest::Client::builder()
-                .user_agent("codewhale-version-check")
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-            {
-                Ok(c) => c,
-                Err(_) => return None,
-            };
-            let resp = client
-                .get("https://api.github.com/repos/Hmbown/CodeWhale/releases/latest")
-                .header("Accept", "application/vnd.github+json")
-                .send()
-                .await
-                .ok()?;
-            let json: serde_json::Value = resp.json().await.ok()?;
-            let tag = json["tag_name"].as_str()?;
-            let latest = tag.trim_start_matches('v');
-            // Compare semver so dev builds (e.g. "0.8.46-pre") don't
-            // trigger false hints. Falls back to string compare on
-            // unparseable versions.
-            let newer = match (parse_semver(latest), parse_semver(&current)) {
-                (Some(l), Some(c)) => l > c,
-                _ => latest != current,
-            };
-            if newer {
-                Some(format!(
-                    "v{latest} available — run `codewhale update` and restart"
-                ))
-            } else {
-                None
-            }
+    let mut version_check: Option<tokio::task::JoinHandle<Option<String>>> = if config.update.as_ref().map_or(true, |u| u.check_for_updates) {
+        Some({
+            let current = env!("CARGO_PKG_VERSION").to_string();
+            let update_uri = config.update.as_ref().and_then(|u| u.update_uri.clone())
+                .or_else(|| std::env::var("CODEWHALE_RELEASE_BASE_URL").ok())
+                .unwrap_or_else(|| "https://api.github.com/repos/Hmbown/CodeWhale/releases/latest".to_string());
+            tokio::spawn(async move {
+                let client = match reqwest::Client::builder()
+                    .user_agent("codewhale-version-check")
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(_) => return None,
+                };
+                let resp = client
+                    .get(&update_uri)
+                    .header("Accept", "application/vnd.github+json")
+                    .send()
+                    .await
+                    .ok()?;
+                let json: serde_json::Value = resp.json().await.ok()?;
+                let tag = json["tag_name"].as_str()?;
+                let latest = tag.trim_start_matches('v');
+                // Compare semver so dev builds (e.g. "0.8.46-pre") don't
+                // trigger false hints. Falls back to string compare on
+                // unparseable versions.
+                let newer = match (parse_semver(latest), parse_semver(&current)) {
+                    (Some(l), Some(c)) => l > c,
+                    _ => latest != current,
+                };
+                if newer {
+                    Some(format!(
+                        "v{latest} available — run `codewhale update` and restart"
+                    ))
+                } else {
+                    None
+                }
+            })
         })
-    });
+    } else {
+        None
+    };
 
     loop {
         // Drain the version-check handle once; re-assign None so we

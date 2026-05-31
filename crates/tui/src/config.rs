@@ -1019,9 +1019,24 @@ pub struct AutoConfig {
     pub cost_saving: Option<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpdateConfig {
+    #[serde(default = "default_check_for_updates")]
+    pub check_for_updates: bool,
+    
+    /// The URI to check for updates. If None, it will fall back to the 
+    /// CODEWHALE_RELEASE_BASE_URL env var, or finally the default GitHub API.
+    pub update_uri: Option<String>,
+}
+
+fn default_check_for_updates() -> bool {
+    true // preserve backward compatibility
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
+    pub update: Option<UpdateConfig>,
     pub provider: Option<String>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -3244,6 +3259,7 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        update: override_cfg.update.or(base.update),
         provider: override_cfg.provider.or(base.provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
