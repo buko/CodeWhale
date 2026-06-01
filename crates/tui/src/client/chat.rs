@@ -1667,6 +1667,7 @@ fn requires_reasoning_content(model: &str) -> bool {
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
         || has_deepseek_r_series_marker(&lower)
+        || lower.contains("mimo")
 }
 
 fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
@@ -1732,6 +1733,7 @@ fn provider_accepts_reasoning_content(provider: ApiProvider) -> bool {
             | ApiProvider::Novita
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
+            | ApiProvider::Xiaomi
     )
 }
 
@@ -3114,6 +3116,12 @@ mod alias_thinking_detection_tests {
         // `lower.contains("deepseek-v4")` branch).
         assert!(requires_reasoning_content("deepseek-v4-flash"));
         assert!(requires_reasoning_content("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn xiaomi_mimo_models_require_reasoning_content() {
+        assert!(requires_reasoning_content("mimo-v2.5"));
+        assert!(requires_reasoning_content("mimo-v2.5-pro"));
     }
 
     #[test]
