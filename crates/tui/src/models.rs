@@ -229,6 +229,9 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         }
         return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
     }
+    if lower.contains("mimo") {
+        return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
+    }
     if lower.contains("claude") {
         return Some(200_000);
     }
