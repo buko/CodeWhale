@@ -3812,7 +3812,7 @@ async fn run_subagent(
         let request = MessageRequest {
             model: runtime.model.clone(),
             messages: messages.clone(),
-            max_tokens: 4096,
+            max_tokens: 16384,
             system: Some(request_system.clone()),
             tools: Some(tools.clone()),
             tool_choice: Some(json!({ "type": "auto" })),
@@ -3888,6 +3888,15 @@ async fn run_subagent(
             ));
         }
 
+        // Detect API-level truncation. When stop_reason is "length", the
+        // response was cut short by max_tokens and any tool_calls are likely
+        // corrupted (truncated JSON arguments). Skip tool execution and
+        // inject a synthetic error so the model can retry with shorter output.
+        let truncated = response
+            .stop_reason
+            .as_deref()
+            .map_or(false, |r| r == "length");
+
         for block in &response.content {
             match block {
                 ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
@@ -3936,6 +3945,27 @@ async fn run_subagent(
             ),
         );
         let mut tool_results: Vec<ContentBlock> = Vec::new();
+        if truncated {
+            emit_agent_progress(
+                runtime.event_tx.as_ref(),
+                runtime.mailbox.as_ref(),
+                &agent_id,
+                format!("step {steps}/{max_steps}: response truncated by max_tokens, skipping {} tool call(s)", tool_uses.len()),
+            );
+            for (tool_id, tool_name, _) in &tool_uses {
+                tool_results.push(ContentBlock::ToolResult {
+                    tool_use_id: tool_id.clone(),
+                    content: format!(
+                        "Error: Your response was truncated by the max_tokens limit before the tool call arguments for '{}' could be fully generated. \
+                         Reduce the size of the 'content' parameter (e.g., write a shorter file, split into multiple smaller writes, or summarize) and retry.",
+                        tool_name
+                    ),
+                    is_error: Some(true),
+                    content_blocks: None,
+                });
+            }
+            tool_uses.clear();
+        }
         for (tool_id, tool_name, tool_input) in tool_uses {
             emit_agent_progress(
                 runtime.event_tx.as_ref(),

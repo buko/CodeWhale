@@ -23,6 +23,8 @@ const MAX_ARG_LEN: usize = 1024 * 1024;
 pub enum ArgRepairError {
     #[error("argument exceeded {0} chars; refusing to repair")]
     TooLarge(usize),
+    #[error("failed to repair JSON arguments")]
+    Unrepairable,
 }
 
 /// Repair a raw JSON argument string into a valid `serde_json::Value`.
@@ -57,8 +59,8 @@ pub fn repair(raw: &str) -> Result<Value, ArgRepairError> {
     if let Ok(v) = serde_json::from_str(&s) {
         return Ok(v);
     }
-    // Fallback: empty object
-    Ok(Value::Object(Map::new()))
+    // Fallback: unrepairable
+    Err(ArgRepairError::Unrepairable)
 }
 
 /// Strip ASCII control characters (0x00–0x1F except \t, \n, \r) that appear
@@ -84,9 +86,23 @@ fn strip_control_chars_in_strings(s: &str) -> String {
             out.push(ch);
             continue;
         }
-        if in_string && (ch as u32) < 0x20 && ch != '\t' && ch != '\n' && ch != '\r' {
-            // Drop control characters inside strings
-            continue;
+        if in_string {
+            if ch == '\n' {
+                out.push_str("\\n");
+                continue;
+            }
+            if ch == '\r' {
+                out.push_str("\\r");
+                continue;
+            }
+            if ch == '\t' {
+                out.push_str("\\t");
+                continue;
+            }
+            if (ch as u32) < 0x20 {
+                // Drop other control characters inside strings
+                continue;
+            }
         }
         out.push(ch);
     }
@@ -225,14 +241,12 @@ mod tests {
 
     #[test]
     fn handles_empty_string() {
-        let v = repair("").unwrap();
-        assert_eq!(v, json!({}));
+        assert!(repair("").is_err());
     }
 
     #[test]
     fn handles_gibberish() {
-        let v = repair("not json at all").unwrap();
-        assert_eq!(v, json!({}));
+        assert!(repair("not json at all").is_err());
     }
 
     #[test]

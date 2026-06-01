@@ -159,25 +159,34 @@ pub(super) fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
     if trimmed.is_empty() {
         return None;
     }
-    // Try the deterministic arg-repair ladder first (handles trailing commas,
-    // unclosed braces, embedded control chars, etc.)
+
+    // 1. Attempt to extract the JSON payload if it's wrapped in markdown fences
+    if let Some(stripped) = strip_code_fences(trimmed) {
+        if let Ok(value) = crate::tools::arg_repair::repair(&stripped) {
+            return Some(value);
+        }
+    }
+
+    // 2. Try repairing the raw string
     if let Ok(value) = crate::tools::arg_repair::repair(trimmed) {
         return Some(value);
     }
-    // Fall back to existing strategies for code-fenced, double-encoded, and
-    // segment-extraction patterns that the repair ladder doesn't cover.
-    if let Some(stripped) = strip_code_fences(trimmed)
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped)
-    {
-        return Some(value);
+
+    // 3. Handle double-encoded JSON
+    if let Ok(serde_json::Value::String(inner)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Ok(value) = crate::tools::arg_repair::repair(&inner) {
+            return Some(value);
+        }
     }
-    if let Ok(serde_json::Value::String(inner)) = serde_json::from_str::<serde_json::Value>(trimmed)
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&inner)
-    {
-        return Some(value);
+
+    // 4. Fall back to segment extraction and repair
+    if let Some(segment) = extract_json_segment(trimmed) {
+        if let Ok(value) = crate::tools::arg_repair::repair(&segment) {
+            return Some(value);
+        }
     }
-    extract_json_segment(trimmed)
-        .and_then(|segment| serde_json::from_str::<serde_json::Value>(&segment).ok())
+
+    None
 }
 
 fn strip_code_fences(text: &str) -> Option<String> {
