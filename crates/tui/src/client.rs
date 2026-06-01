@@ -390,8 +390,11 @@ fn is_version_segment(segment: &str) -> bool {
             .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
 }
 
-pub(super) fn api_url(base_url: &str, path: &str) -> String {
+pub(super) fn api_url(provider: crate::config::ApiProvider, base_url: &str, path: &str) -> String {
     let path = path.trim_start_matches('/');
+    if provider == crate::config::ApiProvider::Openai {
+        return format!("{}/{}", base_url.trim_end_matches('/'), path);
+    }
     if path.starts_with("beta/") {
         return format!("{}/{}", unversioned_base_url(base_url), path);
     }
@@ -580,7 +583,7 @@ impl DeepSeekClient {
         model: &str,
         target_language: &str,
     ) -> Result<String> {
-        let url = api_url(&self.base_url, "chat/completions");
+        let url = api_url(self.api_provider, &self.base_url, "chat/completions");
         let mut body = serde_json::json!({
             "model": model,
             "messages": [
@@ -626,7 +629,7 @@ impl DeepSeekClient {
 
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
-        let url = api_url(&self.base_url, "models");
+        let url = api_url(self.api_provider, &self.base_url, "models");
         let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
 
         let status = response.status();
@@ -673,7 +676,7 @@ impl DeepSeekClient {
         if !should_probe {
             return;
         }
-        let health_url = api_url(&self.base_url, "models");
+        let health_url = api_url(self.api_provider, &self.base_url, "models");
         let probe = self.http_client.get(health_url).send().await;
         match probe {
             Ok(resp) if resp.status().is_success() => {
@@ -784,7 +787,7 @@ impl LlmClient for DeepSeekClient {
     }
 
     async fn health_check(&self) -> Result<bool> {
-        let health_url = api_url(&self.base_url, "models");
+        let health_url = api_url(self.api_provider, &self.base_url, "models");
         self.wait_for_rate_limit().await;
         let response = self.http_client.get(health_url).send().await;
         match response {
@@ -1076,7 +1079,7 @@ impl DeepSeekClient {
         suffix: &str,
         max_tokens: u32,
     ) -> anyhow::Result<String> {
-        let url = api_url(&self.base_url, "beta/completions");
+        let url = api_url(self.api_provider, &self.base_url, "beta/completions");
         let body = json!({
             "model": model,
             "prompt": prompt,
@@ -1193,21 +1196,21 @@ mod tests {
     #[test]
     fn api_url_handles_default_v1_and_beta_base_urls() {
         assert_eq!(
-            api_url("https://api.deepseek.com", "chat/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/v1", "chat/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/v1", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
         // Non-beta paths from a /beta base URL route to /v1.
         // Only paths with an explicit beta/ prefix use the beta surface.
         assert_eq!(
-            api_url("https://api.deepseek.com/beta", "chat/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/beta", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
         assert_eq!(
-            api_url(
+            api_url(crate::config::ApiProvider::Deepseek, 
                 "https://openai-compatible.example/api/coding/paas/v4",
                 "chat/completions"
             ),
@@ -1218,15 +1221,15 @@ mod tests {
     #[test]
     fn api_url_routes_beta_paths_from_any_deepseek_base() {
         assert_eq!(
-            api_url("https://api.deepseek.com", "beta/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com", "beta/completions"),
             "https://api.deepseek.com/beta/completions"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/v1", "beta/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/v1", "beta/completions"),
             "https://api.deepseek.com/beta/completions"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/beta", "beta/completions"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/beta", "beta/completions"),
             "https://api.deepseek.com/beta/completions"
         );
     }
@@ -1237,20 +1240,20 @@ mod tests {
         // /beta/models. Non-beta paths from a /beta base URL must
         // still route to /v1.
         assert_eq!(
-            api_url("https://api.deepseek.com", "models"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com", "models"),
             "https://api.deepseek.com/v1/models"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/v1", "models"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/v1", "models"),
             "https://api.deepseek.com/v1/models"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/beta", "models"),
+            api_url(crate::config::ApiProvider::Deepseek, "https://api.deepseek.com/beta", "models"),
             "https://api.deepseek.com/v1/models"
         );
         // explicit v<N> versions other than /v1 should be preserved
         assert_eq!(
-            api_url(
+            api_url(crate::config::ApiProvider::Deepseek, 
                 "https://openai-compatible.example/api/coding/paas/v4",
                 "models"
             ),

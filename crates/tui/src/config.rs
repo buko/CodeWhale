@@ -423,6 +423,9 @@ fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
 /// aliases like `deepseek-v4pro` → `deepseek-v4-pro`.
 #[must_use]
 pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
+    if provider == ApiProvider::Openai {
+        return Some(model.to_string());
+    }
     let normalized = normalize_model_name(model)?;
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)
