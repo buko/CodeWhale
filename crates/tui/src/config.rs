@@ -80,6 +80,7 @@ pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek/deepseek-v4-flash",
 ];
 pub const OFFICIAL_DEEPSEEK_MODELS: &[&str] = &["deepseek-v4-pro", "deepseek-v4-flash"];
+pub const OFFICIAL_XIAOMI_MODELS: &[&str] = &["mimo-v2.5", "mimo-v2.5-pro"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -378,7 +379,7 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     }
 
     let normalized = trimmed.to_ascii_lowercase();
-    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") {
+    if !normalized.starts_with("deepseek") && !normalized.contains("/deepseek") && !normalized.starts_with("mimo") {
         return None;
     }
 
@@ -454,9 +455,10 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::WanjieArk => vec![DEFAULT_WANJIE_ARK_MODEL],
         ApiProvider::Sglang => vec![DEFAULT_SGLANG_MODEL, DEFAULT_SGLANG_FLASH_MODEL],
         ApiProvider::Vllm => vec![DEFAULT_VLLM_MODEL, DEFAULT_VLLM_FLASH_MODEL],
-        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama | ApiProvider::Xiaomi => {
+        ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {
             OFFICIAL_DEEPSEEK_MODELS.to_vec()
         }
+        ApiProvider::Xiaomi => OFFICIAL_XIAOMI_MODELS.to_vec(),
     }
 }
 

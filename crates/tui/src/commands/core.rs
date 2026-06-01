@@ -136,9 +136,10 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             );
         }
         let Some(model_id) = normalize_model_name_for_provider(app.api_provider, name) else {
+            let valid_models = crate::config::model_completion_names_for_provider(app.api_provider);
             return CommandResult::error(format!(
-                "Invalid model '{name}'. Expected auto or a DeepSeek model ID. Common models: {}",
-                COMMON_DEEPSEEK_MODELS.join(", ")
+                "Invalid model '{name}'. Expected auto or a valid model ID. Common models: {}",
+                valid_models.join(", ")
             ));
         };
         let old_model = app.model_display_label();

@@ -407,9 +407,10 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             }
             // Clear auto mode when a specific model is set
             let Some(model) = normalize_model_name_for_provider(app.api_provider, value) else {
+                let valid_models = crate::config::model_completion_names_for_provider(app.api_provider);
                 return CommandResult::error(format!(
-                    "Invalid model '{value}'. Expected a DeepSeek model ID. Common models: {}",
-                    COMMON_DEEPSEEK_MODELS.join(", ")
+                    "Invalid model '{value}'. Expected a valid model ID. Common models: {}",
+                    valid_models.join(", ")
                 ));
             };
             app.set_model_selection(model.clone());
