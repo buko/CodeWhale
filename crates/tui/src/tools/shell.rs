@@ -21,6 +21,8 @@ use wait_timeout::ChildExt;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
@@ -223,6 +225,113 @@ fn install_parent_death_signal(_cmd: &mut Command) {
     // leak children on those platforms — tracked as a follow-up.
 }
 
+/// Restore console input mode after spawning a child process on Windows.
+///
+/// Child processes (especially `cmd.exe`) can call `SetConsoleMode` on the
+/// inherited console input handle during startup, resetting crossterm's raw
+/// mode to cooked mode. This disables all keyboard event delivery to the TUI
+/// event loop. This function detects the hijack immediately after spawn and
+/// restores raw mode before `crossterm::event::poll` has a chance to block.
+#[cfg(windows)]
+fn restore_console_mode_after_spawn() {
+    use windows::Win32::System::Console::{
+        FlushConsoleInputBuffer, GetConsoleMode, GetStdHandle, CONSOLE_MODE,
+        ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
+    };
+
+    unsafe {
+        let handle = match GetStdHandle(STD_INPUT_HANDLE) {
+            Ok(h) if !h.is_invalid() => h,
+            _ => return,
+        };
+        let mut mode = CONSOLE_MODE::default();
+        if GetConsoleMode(handle, &mut mode).is_err() {
+            return;
+        }
+        // If ENABLE_ECHO_INPUT is set, cmd.exe (or another child) switched
+        // the console from raw mode to cooked mode. Restore raw mode.
+        if mode.0 & ENABLE_ECHO_INPUT.0 != 0 {
+            let _ = FlushConsoleInputBuffer(handle);
+            if let Err(e) = crossterm::terminal::enable_raw_mode() {
+                tracing::warn!(
+                    "Failed to restore console raw mode after child spawn: {e}"
+                );
+            } else {
+                tracing::info!(
+                    "Console input mode was hijacked by child process; raw mode restored"
+                );
+            }
+        }
+    }
+}
+
+/// Kill a process and all its descendants on Windows.
+///
+/// This is the Windows equivalent of `kill_child_process_group()` on Unix.
+/// Uses the Win32 Toolhelp API to enumerate all processes, find descendants
+/// of `root_pid` by walking `th32ParentProcessID` links via BFS, and
+/// terminate them bottom-up so that pipe handles are released and reader
+/// threads can exit.
+#[cfg(windows)]
+fn kill_process_tree(root_pid: u32) -> std::io::Result<()> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("Toolhelp snapshot failed: {e}"))
+        })?;
+
+        let mut entry: PROCESSENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+
+        // Collect (pid, parent_pid) pairs from the system snapshot.
+        let mut all_procs: Vec<(u32, u32)> = Vec::new();
+        if Process32First(snapshot, &mut entry).is_ok() {
+            loop {
+                all_procs.push((entry.th32ProcessID, entry.th32ParentProcessID));
+                entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+                if Process32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+
+        // BFS to find all descendants of root_pid.
+        let mut descendants = Vec::new();
+        let mut queue = vec![root_pid];
+        while let Some(parent) = queue.pop() {
+            for &(pid, ppid) in &all_procs {
+                if ppid == parent && pid != root_pid && pid != 0 {
+                    descendants.push(pid);
+                    queue.push(pid);
+                }
+            }
+        }
+
+        // Terminate deepest descendants first, then the root.
+        for &pid in descendants.iter().rev() {
+            if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+        if let Ok(handle) = OpenProcess(PROCESS_TERMINATE, false, root_pid) {
+            let _ = TerminateProcess(handle, 1);
+            let _ = CloseHandle(handle);
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ShellExitStatus {
     code: Option<i32>,
@@ -269,7 +378,12 @@ impl ShellChild {
         match self {
             #[cfg(unix)]
             ShellChild::Process(child) => kill_child_process_group(child),
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            ShellChild::Process(child) => {
+                let _ = kill_process_tree(child.id());
+                child.kill()
+            }
+            #[cfg(not(any(unix, windows)))]
             ShellChild::Process(child) => child.kill(),
             ShellChild::Pty(child) => child.kill(),
         }
@@ -378,6 +492,10 @@ impl BackgroundShell {
         #[cfg(unix)]
         if let Some(ShellChild::Process(ref mut proc)) = self.child {
             let _ = kill_child_process_group(proc);
+        }
+        #[cfg(windows)]
+        if let Some(ShellChild::Process(ref proc)) = self.child {
+            let _ = kill_process_tree(proc.id());
         }
         if let Some(handle) = self.stdout_thread.take() {
             let _ = handle.join();
@@ -833,10 +951,27 @@ impl ShellManager {
         {
             cmd.process_group(0);
         }
+        #[cfg(windows)]
+        {
+            // CREATE_NO_WINDOW gives the child an invisible console — no
+            // visible window flashes on screen. With all three standard
+            // handles piped, cmd.exe has no reason to call AttachConsole
+            // to reach the parent's console. Note: do NOT combine with
+            // DETACHED_PROCESS — per the Win32 API, DETACHED_PROCESS
+            // overrides CREATE_NO_WINDOW, nullifying window suppression.
+            // See investigation-deepseek.xhtml for the full analysis.
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
         install_parent_death_signal(&mut cmd);
 
         if stdin_data.is_some() {
             cmd.stdin(Stdio::piped());
+        } else {
+            // When no stdin data is provided, explicitly set stdin to null
+            // to close the last standard-I/O leakage path. On Windows, the
+            // default is Stdio::inherit(), which can allow the child to
+            // access the console through the stdin handle.
+            cmd.stdin(Stdio::null());
         }
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
@@ -844,6 +979,9 @@ impl ShellManager {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
+
+        #[cfg(windows)]
+        restore_console_mode_after_spawn();
 
         if let Some(input) = stdin_data
             && let Some(mut stdin) = child.stdin.take()
@@ -1085,6 +1223,10 @@ impl ShellManager {
                 .slave
                 .spawn_command(cmd)
                 .with_context(|| format!("Failed to spawn PTY command: {original_command}"))?;
+
+            #[cfg(windows)]
+            restore_console_mode_after_spawn();
+
             drop(pair.slave);
 
             let reader = pair
@@ -1114,12 +1256,21 @@ impl ShellManager {
             {
                 cmd.process_group(0);
             }
+            #[cfg(windows)]
+            {
+                // Prevent console window. See execute_sync_sandboxed
+                // for full rationale.
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
 
             child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
             let mut child = cmd
                 .spawn()
                 .with_context(|| format!("Failed to spawn background: {original_command}"))?;
+
+            #[cfg(windows)]
+            restore_console_mode_after_spawn();
 
             let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
             let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
